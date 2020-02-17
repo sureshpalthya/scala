@@ -1,0 +1,518 @@
+
+
+
+import org.apache.spark.sql.execution.datasources.hbase._
+import org.apache.spark.sql._
+import org.apache.spark.sql.functions._
+
+trait reportClassSkeleton {
+  def mainMethod(sparkObject:SparkSession,configFilePath:String)={}
+}
+
+
+
+import com.hbase.catalog._
+import org.apache.spark.sql.execution.datasources.hbase._
+import org.apache.spark.sql._
+import org.apache.spark.sql.functions._
+import org.apache.hadoop.hbase.protobuf.ProtobufUtil
+import org.apache.hadoop.hbase.protobuf.generated.ClientProtos
+import org.apache.hadoop.hbase.util.Base64
+import org.apache.hadoop.hbase.client._
+import org.apache.hadoop.hbase.util.Bytes
+import java.util.Properties
+import java.io._
+import com.sprint.edl.jdbc._
+import scala.util.control._
+import scala.util.control.Breaks._
+
+class R12_InventoryReceiving_Newest extends reportClassSkeleton{
+  override def mainMethod(sparkObject:SparkSession,configFilePath:String)={
+   
+   
+   
+
+val prop: Properties = new Properties()
+val fileName = configFilePath+"R12_hbase_config_key.conf"
+val hdfsConf = new org.apache.hadoop.conf.Configuration()
+val fs = org.apache.hadoop.fs.FileSystem.get(hdfsConf)
+val is = fs.open(new org.apache.hadoop.fs.Path(fileName))
+prop.load(is)
+println(" Loading prop file completed !!! ")
+println(" Setting up application configurations !!! ")
+val appName: String = prop.getProperty("report.application.name")
+val columnfamily: String = prop.getProperty("hbase_column_family")
+val scantable_logic: String = prop.getProperty("HbaseScan_By_time")
+
+val cfDataBytes = Bytes.toBytes(columnfamily)
+val hive_table_name = prop.getProperty("hive_report_name")
+val hbase_omim_schema_name=prop.getProperty("hbase_omim_schema_name")
+val cntLoop=prop.getProperty("cntlTbl_try_count").toInt
+val outer = new Breaks;
+
+//println("scantable_logic:"+scantable_logic)
+println("Success fully Loaded Property File : "+fileName)
+
+
+val application_id=sparkObject.sparkContext.applicationId
+
+var cntlProp: Properties = new Properties()
+
+val t1 = new cntlTable
+
+if(cntLoop == null)
+cntLoop==1
+outer.breakable {
+for (a <- 0 to cntLoop)
+{
+println("Control table loop iteration:"+a)
+cntlProp=t1.setRepStartStatus(appName,application_id,prop)
+println("report status output:"+cntlProp.getProperty("runStatus"))
+if(cntlProp.getProperty("runStatus")=="success")
+{
+println("Control table insert status returned Success")
+outer.break
+}
+}
+}
+
+
+//cntlProp=t1.setRepStartStatus(appName)
+val repId=cntlProp.getProperty("id").toInt
+println("Control table insert id:"+repId)
+
+if (repId != -1)
+{
+try
+{    
+def convertScanToString(scan: Scan): String = {
+val proto: ClientProtos.Scan = ProtobufUtil.toScan(scan);
+return Base64.encodeBytes(proto.toByteArray());
+}
+val mmt_select=prop.getProperty("df_mmt.select")
+val store_hierarchy_select =  prop.getProperty("df_store_hierarchy.select")
+val sku_hierarchy_select= prop.getProperty("df_sku_hierarchy.select")
+val employee_select= prop.getProperty("df_employee.select")
+val df_union1_select =  prop.getProperty("df_union1.select")
+val df_union2_select= prop.getProperty("df_union2.select")
+val df_final_select= prop.getProperty("df_final.select")
+
+val df_mmt_r12=sparkObject.sqlContext.sql(s"""$mmt_select""")
+df_mmt_r12.createOrReplaceTempView("mmt_r12")
+df_mmt_r12.cache()
+
+val df_store_hierarchy_r12= sparkObject.sqlContext.sql(s"""$store_hierarchy_select""")
+df_store_hierarchy_r12.createOrReplaceTempView("store_hierarchy_r12")
+df_store_hierarchy_r12.cache()
+
+val df_sku_hierarchy_r12=sparkObject.sqlContext.sql(s"""$sku_hierarchy_select""")
+df_sku_hierarchy_r12.createOrReplaceTempView("sku_hierarchy_r12")
+df_sku_hierarchy_r12.cache()
+
+val df_employee_r12 = sparkObject.sqlContext.sql(s""" $employee_select """)
+df_employee_r12.createOrReplaceTempView("employee_r12")
+
+val df_union1_r12= sparkObject.sqlContext.sql(s""" $df_union1_select """)
+df_union1_r12.createOrReplaceTempView("union1_r12")
+
+
+val df_union2_r12= sparkObject.sqlContext.sql(s""" $df_union2_select """)
+df_union2_r12.createOrReplaceTempView("union2_r12")
+
+val df_final_r12= sparkObject.sqlContext.sql(s""" $df_final_select """)  
+df_final_r12.createOrReplaceTempView("R12_final")
+df_final_r12.cache()
+df_final_r12.show()
+
+
+val table_status =sparkObject.catalog.tableExists(hive_table_name)
+if (table_status == true) {
+//sparkObject.sqlContext.sql(s"""drop table if exists $hive_table_name """)
+//sparkObject.sqlContext.sql(s"""create table $hive_table_name STORED AS ORC as select received_quantity, received_date, COALESCE(carton_number,pkg_tracking_number,'NA') PO, cost, sku, short_nm, class_nm, category,  dept_nm,  ORGANIZATION_CODE , receive_by_login , LOGIN_NAME, home_co_nm , region_co_nm , district_co_nm , store_co_nm , vendor, 0 rms_delivery_no from R12_final""")  
+sparkObject.sqlContext.sql(s"""TRUNCATE TABLE $hive_table_name""")
+sparkObject.sqlContext.sql(s"""INSERT OVERWRITE TABLE $hive_table_name partition(tran_dt) select received_quantity, received_date, COALESCE(carton_number,pkg_tracking_number,'NA') PO, cost, sku, short_nm, class_nm, category,  dept_nm,  ORGANIZATION_CODE , receive_by_login , LOGIN_NAME, home_co_nm , region_co_nm , district_co_nm , store_co_nm , vendor, 0 rms_delivery_no, cast(from_unixtime(unix_timestamp(received_date,'yyyy-MM-dd'),'yyyy-MM-dd') as date) as tran_dt from R12_final""")
+sparkObject.sqlContext.sql(s"""ANALYZE TABLE $hive_table_name PARTITION(tran_dt) COMPUTE STATISTICS""")
+}
+else
+{    
+//spark.sqlContext.sql(s"""create table $hive_table_name STORED AS ORC as select received_quantity, received_date, COALESCE(carton_number,pkg_tracking_number,'NA') PO, cost, sku, short_nm, class_nm, category,  dept_nm,  ORGANIZATION_CODE , receive_by_login , LOGIN_NAME, home_co_nm , region_co_nm , district_co_nm , store_co_nm , vendor, 0 rms_delivery_no from R12_final""")
+//spark.sqlContext.sql(s"""TRUNCATE TABLE $hive_table_name""")
+sparkObject.sqlContext.sql(s"""select received_quantity, received_date, COALESCE(carton_number,pkg_tracking_number,'NA') PO, cost, sku, short_nm, class_nm, category,  dept_nm,  ORGANIZATION_CODE , receive_by_login , LOGIN_NAME, home_co_nm , region_co_nm , district_co_nm , store_co_nm , vendor, 0 rms_delivery_no, cast(from_unixtime(unix_timestamp(received_date,'yyyy-MM-dd'),'yyyy-MM-dd') as date) as tran_dt from R12_final""").write.format("orc").partitionBy("tran_dt").mode("overwrite").saveAsTable(hive_table_name)
+sparkObject.sqlContext.sql(s"""ANALYZE TABLE $hive_table_name PARTITION(tran_dt) COMPUTE STATISTICS""")    
+}
+
+// sparkObject.catalog.dropTempView("store_hierarchy_r13")
+// sparkObject.catalog.dropTempView("sku_hierarchy1_r13")
+// sparkObject.catalog.dropTempView("sku_hierarchy2_r13")
+// sparkObject.catalog.dropTempView("sku_hierarchy3_r13")
+// sparkObject.catalog.dropTempView("sku_hierarchy4_r13")
+// sparkObject.catalog.dropTempView("employee_r13")
+// sparkObject.catalog.dropTempView("union1_r13")
+// sparkObject.catalog.dropTempView("union2_r13")
+// sparkObject.catalog.dropTempView("union3_r13")
+// sparkObject.catalog.dropTempView("union4_r13")
+
+}
+catch {
+case ex: Exception => {
+println("Application caught an exception !!!")
+val sw = new StringWriter
+ex.printStackTrace(new PrintWriter(sw))
+println(ex.printStackTrace())
+val repStatus=t1.setRepEndStatus(appName,repId,"Failed",sw.toString.substring(0,1000),prop)
+println("report status output:"+repStatus)
+//System.exit(-999)
+throw ex
+}
+
+} finally {
+println("Application Exiting!!!")
+println("Exiting finally...")
+}
+
+
+//if(cntLoop == null) cntLoop==1
+outer.breakable
+{
+for (a <- 0 to cntLoop)
+{
+val repStatus=t1.setRepEndStatus(appName,repId,"Complete",null,prop)
+println("omim update status output:"+cntlProp.getProperty("runStatus"))
+if(repStatus)
+{
+println("Control table update status returned Success")
+outer.break
+}
+}
+}
+
+//val repStatus=t1.setRepEndStatus(appName,repId,"Complete",null)
+//println("omim update status output:"+cntlProp.getProperty("runStatus"))
+
+}
+else
+println("Report"+appName+" is not ready for EDL aggregation")
+   
+  }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+package com.edl.omim.reports.ver3 
+import com.edl.hbase.catalog._ 
+import org.apache.spark.sql.execution.datasources.hbase._ 
+import org.apache.spark
+
+
+package com.edl.omim.reports.ver3 trait reportClassSkeleton { def mainMethod(sparkObject:SparkSession,configFilePath:String)={} }
+
+
+
+report.application.name=R22_InventoryAdjustments
+HbaseScan_By_time=true
+hbase_column_family=f
+hive_report_name=m9s_analysis.inventory_adjustments_run
+cntlTbl_try_count=3
+
+driver=com.mysql.jdbc.Driver
+url=jdbc:mysql://plsq00006e2.corp.sprint.com/omim
+username=root
+password=root06e2
+omimcutofftime=15
+
+
+table_names=RHS_TGT_RHS_COMPANY_INT,
+            LFO_TGT_LFO_COMPANY_INT,
+
+
+RHS_TGT_RHS_COMPANY_INT.type=ref
+RHS_TGT_RHS_COMPANY_INT.dbtype=hive
+RHS_TGT_RHS_COMPANY_INT.catalog_name=
+RHS_TGT_RHS_COMPANY_INT.df_name=company_rsm
+RHS_TGT_RHS_COMPANY_INT.dbname=BKP_TBLS
+RHS_TGT_RHS_COMPANY_INT.table=TGT_RHS_COMPANY_INT
+RHS_TGT_RHS_COMPANY_INT.cache=true
+
+LFO_TGT_LFO_COMPANY_INT.type=ref
+LFO_TGT_LFO_COMPANY_INT.dbtype=hive
+LFO_TGT_LFO_COMPANY_INT.catalog_name=
+LFO_TGT_LFO_COMPANY_INT.df_name=company_rsk
+LFO_TGT_LFO_COMPANY_INT.dbname=BKP_TBLS
+LFO_TGT_LFO_COMPANY_INT.table=TGT_LFO_COMPANY_INT
+LFO_TGT_LFO_COMPANY_INT.cache=true
+
+RHS_TGT_RHS_PRODUCT_MASTER.type=ref
+RHS_TGT_RHS_PRODUCT_MASTER.dbtype=hive
+RHS_TGT_RHS_PRODUCT_MASTER.catalog_name=
+RHS_TGT_RHS_PRODUCT_MASTER.df_name=pm
+RHS_TGT_RHS_PRODUCT_MASTER.dbname=BKP_TBLS
+RHS_TGT_RHS_PRODUCT_MASTER.table=TGT_RHS_PRODUCT_MASTER
+RHS_TGT_RHS_PRODUCT_MASTER.cache=false
+
+
+RHS_TGT_RHS_PRODUCT_CLASS.type=ref
+RHS_TGT_RHS_PRODUCT_CLASS.dbtype=hive
+RHS_TGT_RHS_PRODUCT_CLASS.catalog_name=
+RHS_TGT_RHS_PRODUCT_CLASS.df_name=pc
+RHS_TGT_RHS_PRODUCT_CLASS.dbname=BKP_TBLS
+RHS_TGT_RHS_PRODUCT_CLASS.table=TGT_RHS_PRODUCT_CLASS
+RHS_TGT_RHS_PRODUCT_CLASS.cache=false
+
+
+RHS_TGT_RHS_PRODUCT_SUBCLASS.type=ref
+RHS_TGT_RHS_PRODUCT_SUBCLASS.dbtype=hive
+RHS_TGT_RHS_PRODUCT_SUBCLASS.catalog_name=
+RHS_TGT_RHS_PRODUCT_SUBCLASS.df_name=psc
+RHS_TGT_RHS_PRODUCT_SUBCLASS.dbname=BKP_TBLS
+RHS_TGT_RHS_PRODUCT_SUBCLASS.table=TGT_RHS_PRODUCT_SUBCLASS
+RHS_TGT_RHS_PRODUCT_SUBCLASS.cache=false
+
+RHS_TGT_RHS_DEPARTMENTS.type=ref
+RHS_TGT_RHS_DEPARTMENTS.dbtype=hive
+RHS_TGT_RHS_DEPARTMENTS.catalog_name=
+RHS_TGT_RHS_DEPARTMENTS.df_name=dep
+RHS_TGT_RHS_DEPARTMENTS.dbname=BKP_TBLS
+RHS_TGT_RHS_DEPARTMENTS.table=TGT_RHS_DEPARTMENTS
+RHS_TGT_RHS_DEPARTMENTS.cache=false
+
+RHS_TGT_RHS_EMPLOYEE.type=ref
+RHS_TGT_RHS_EMPLOYEE.dbtype=hive
+RHS_TGT_RHS_EMPLOYEE.catalog_name=
+RHS_TGT_RHS_EMPLOYEE.df_name=rms_employee
+RHS_TGT_RHS_EMPLOYEE.dbname=BKP_TBLS
+RHS_TGT_RHS_EMPLOYEE.table=TGT_RHS_EMPLOYEE
+RHS_TGT_RHS_EMPLOYEE.cache=false
+
+LFO_TGT_LFO_EMPLOYEE.type=ref
+LFO_TGT_LFO_EMPLOYEE.dbtype=hive
+LFO_TGT_LFO_EMPLOYEE.catalog_name=
+LFO_TGT_LFO_EMPLOYEE.df_name=rmsrsk_employee
+LFO_TGT_LFO_EMPLOYEE.dbname=BKP_TBLS
+LFO_TGT_LFO_EMPLOYEE.table=TGT_LFO_EMPLOYEE
+LFO_TGT_LFO_EMPLOYEE.cache=false
+
+OMIM_HB_MTL_MATERIAL_TRANSACTIONS.type=fact
+OMIM_HB_MTL_MATERIAL_TRANSACTIONS.dbtype=hbase
+OMIM_HB_MTL_MATERIAL_TRANSACTIONS.catalog_name=catalog_mtl_material_transactions
+OMIM_HB_MTL_MATERIAL_TRANSACTIONS.df_name=mmt
+OMIM_HB_MTL_MATERIAL_TRANSACTIONS.dbname=OMIM1
+OMIM_HB_MTL_MATERIAL_TRANSACTIONS.table=HB_MTL_MATERIAL_TRANSACTIONS
+OMIM_HB_MTL_MATERIAL_TRANSACTIONS.select=transaction_quantity,transaction_date,attribute2,attribute10,transaction_type_id,transaction_id,organization_id,subinventory_code,inventory_item_id,shipment_number,transaction_reference,transaction_cost,source_code,reason_id
+OMIM_HB_MTL_MATERIAL_TRANSACTIONS.cache=true
+OMIM_HB_MTL_MATERIAL_TRANSACTIONS.filter=(((organization_id = 115) OR (organization_id = 125)) AND (source_code = 'RMS_ADJ'))
+
+OMIM1_HB_MTL_SYSTEM_ITEMS_B.type=fact
+OMIM1_HB_MTL_SYSTEM_ITEMS_B.dbtype=hbase
+OMIM1_HB_MTL_SYSTEM_ITEMS_B.catalog_name=catalog_mtl_system_item_b
+OMIM1_HB_MTL_SYSTEM_ITEMS_B.df_name=msi
+OMIM1_HB_MTL_SYSTEM_ITEMS_B.dbname=OMIM1
+OMIM1_HB_MTL_SYSTEM_ITEMS_B.table=HB_MTL_SYSTEM_ITEMS_B
+OMIM1_HB_MTL_SYSTEM_ITEMS_B.select=organization_id,segment1,inventory_item_id
+OMIM1_HB_MTL_SYSTEM_ITEMS_B.cache=true
+
+OMIM_HB_MTL_UNIT_TRANSACTIONS.type=fact
+OMIM_HB_MTL_UNIT_TRANSACTIONS.dbtype=hbase
+OMIM_HB_MTL_UNIT_TRANSACTIONS.catalog_name=catalog_mtl_unit_transactions
+OMIM_HB_MTL_UNIT_TRANSACTIONS.df_name=mut
+OMIM_HB_MTL_UNIT_TRANSACTIONS.dbname=OMIM1
+OMIM_HB_MTL_UNIT_TRANSACTIONS.table=HB_MTL_UNIT_TRANSACTIONS_SNPSHT
+OMIM_HB_MTL_UNIT_TRANSACTIONS.select=serial_number,transaction_id,n_attribute4
+OMIM_HB_MTL_UNIT_TRANSACTIONS.cache=true
+
+OMIM_HB_FND_LOOKUP_VALUES.type=fact
+OMIM_HB_FND_LOOKUP_VALUES.dbtype=hbase
+OMIM_HB_FND_LOOKUP_VALUES.catalog_name=catalog_fnd_lookup_values
+OMIM_HB_FND_LOOKUP_VALUES.df_name=fnd_lookup
+OMIM_HB_FND_LOOKUP_VALUES.dbname=OMIM1
+OMIM_HB_FND_LOOKUP_VALUES.table=HB_FND_LOOKUP_VALUES
+OMIM_HB_FND_LOOKUP_VALUES.cache=true
+
+df_store_hierarchy.select=(select h.company_nm  home_co_nm , d.company_nm  region_co_nm , r.company_nm  district_co_nm , s.company_nm  store_co_nm , s.STORE_ASI_ID, 115 channel from company_rsm  h left outer join company_rsm  d  on h.loc_ba_id = d.mainloc_ba_id  and d.type_id = 4 left outer join    company_rsm  r  on d.loc_ba_id = r.mainloc_ba_id   and r.type_id = 5     left outer join        company_rsm  s  on r.loc_ba_id = s.mainloc_ba_id  and s.type_id = 2 where h.type_id = 1 and s.store_status_indcr = 'O' AND length(s.store_asi_id)=8) union all  (select h.company_nm  home_co_nm , d.company_nm  region_co_nm , r.company_nm  district_co_nm , s.company_nm  store_co_nm , s.STORE_ASI_ID , 125 channel from company_rsk   h left outer join company_rsk   d  on h.loc_ba_id = d.mainloc_ba_id  and d.type_id = 4 left outer join       company_rsk   r  on d.loc_ba_id = r.mainloc_ba_id   and r.type_id = 5 left outer join   company_rsk   s  on r.loc_ba_id = s.mainloc_ba_id  and s.type_id = 2 where h.type_id = 1 and s.store_status_indcr = 'O' AND length(s.store_asi_id)=8)
+
+df_sku_hierarchy2.select=select pm.sku,pm.short_nm,pc.class_nm,psc.subclass_nm category,pm.product_id,dep.dept_nm,pm.retl_price,pm.cost_price from pm, pc, psc,dep where 1=1 and pm.class_id = pc.class_id and pm.subclass_id = psc.subclass_id and pm.dept_id = dep.dept_id
+
+df_sku_hierarchy1.select=select * from sku_hierarchy2 where dept_nm = 'Accessories'
+
+df_employee.select=select login_id, Concat(l_name,',',f_name) LOGIN_NAME, 115 channel  from rms_employee where active_flag = 'y' union all select login_id, Concat(l_name,', ',f_name) LOGIN_NAME, 125 channel  from rmsrsk_employee  where active_flag = 'y'
+
+df_flv.select=select cast(lookup_code as bigint ) lookup_code,description from fnd_lookup where lookup_type = 'SPRN_RMS_EQUIPMENT_STATUS'
+
+df_union1.select=select msi.SEGMENT1 sku   , sku_hierarchy1.short_nm   , sku_hierarchy1.class_nm   , sku_hierarchy1.category   , sku_hierarchy1.dept_nm   , store_hierarchy.home_co_nm   , store_hierarchy.region_co_nm   , store_hierarchy.district_co_nm   , store_hierarchy.store_co_nm   ,if(store_hierarchy.channel=115,'RHS', if(store_hierarchy.channel=125,'LFO',store_hierarchy.channel )) channel   ,mmt.TRANSACTION_REFERENCE transaction_number   ,if(mmt.transaction_type_id=40,'UP', if(mmt.transaction_type_id=1,'DOWN',mmt.transaction_type_id )) adjustment_direction   , mmt.ATTRIBUTE2  USER_LOGIN   , EMPLOYEE.LOGIN_NAME   , cast(mmt.transaction_quantity as decimal(10,0)) QTY   , CAST(regexp_replace(trunc(mmt.TRANSACTION_DATE,'DD'),'^(.*?)\\:','$1 ') as timestamp) transaction_date   , cast(sku_hierarchy1.cost_price as decimal(12,4)) cost_price   , cast(sku_hierarchy1.retl_price as decimal(12,4)) retl_price   , 'ACC' equipment_status   , 'ACC' serial_number   , coalesce(substr(mmt.attribute10, instr(mmt.attribute10, '_')+1), 'NA') ADJUSTMENT_reason from mmt inner join store_hierarchy on mmt.organization_id = store_hierarchy.channel and substr(mmt.SUBINVENTORY_CODE, 1,8)  = store_hierarchy.STORE_ASI_ID  inner join msi on mmt.ORGANIZATION_ID = msi.ORGANIZATION_ID and mmt.INVENTORY_ITEM_ID = msi.INVENTORY_ITEM_ID inner join sku_hierarchy1 on msi.SEGMENT1 = sku_hierarchy1.SKU left outer join employee on mmt.ATTRIBUTE2=EMPLOYEE.login_id and mmt.organization_id =EMPLOYEE.channel
+
+df_union2.select=select msi.SEGMENT1 sku   , sku_hierarchy2.short_nm   , sku_hierarchy2.class_nm   , sku_hierarchy2.category   , sku_hierarchy2.dept_nm   , store_hierarchy.home_co_nm   , store_hierarchy.region_co_nm   , store_hierarchy.district_co_nm   , store_hierarchy.store_co_nm   ,if(store_hierarchy.channel=115,'RHS', if(store_hierarchy.channel=125,'LFO',store_hierarchy.channel )) channel   ,mmt.TRANSACTION_REFERENCE transaction_number   ,if(mmt.transaction_type_id=40,'UP', if(mmt.transaction_type_id=1,'DOWN',mmt.transaction_type_id )) adjustment_direction   , mmt.ATTRIBUTE2  USER_LOGIN   , EMPLOYEE.LOGIN_NAME   , cast(mmt.transaction_quantity as decimal(10,0)) QTY   , CAST(regexp_replace(trunc(mmt.TRANSACTION_DATE,'DD'),'^(.*?)\\:','$1 ') as timestamp) transaction_date   , cast(sku_hierarchy2.cost_price as decimal(12,4)) cost_price   , cast(sku_hierarchy2.retl_price as decimal(12,4)) retl_price   , flv.DESCRIPTION equipment_status    , mut.serial_number   , coalesce(substr(mmt.attribute10, instr(mmt.attribute10, '_')+1), 'NA') ADJUSTMENT_reason from mmt inner join msi on mmt.organization_id =  msi.organization_id and mmt.inventory_item_id = msi.inventory_item_id inner join store_hierarchy on substr(mmt.SUBINVENTORY_CODE, 1,8)  = store_hierarchy.STORE_ASI_ID and mmt.organization_id = store_hierarchy.channel inner join sku_hierarchy2 on msi.SEGMENT1 = sku_hierarchy2.SKU  inner join  mut on mmt.transaction_id = mut.transaction_id left outer join employee on mmt.ATTRIBUTE2=employee.login_id and mmt.organization_id =employee.channel left outer join flv on cast(mut.n_attribute4 as bigint) = flv.lookup_code
+
+df_final.select= ((select * from union1) union all (select * from union2))
+
+
+################################################
+
+
+package com.edl.jdbc
+
+import java.sql.DriverManager
+import java.util.Properties
+
+
+class cntlTable {
+   
+    val cntlProps = new Properties()
+    //
+    def setRepStartStatus(repName:String,appid:String,prop:Properties) : Properties={
+      var x:Int = -1
+      var repId:Int = -1
+      val url = prop.getProperty("url")
+      val driver = prop.getProperty("driver")
+      val username = prop.getProperty("username")
+      val password = prop.getProperty("password")
+      val omimcutofftime = prop.getProperty("omimcutofftime")
+     
+      val connectionProperties = new Properties()
+      connectionProperties.put("user", username)
+      connectionProperties.put("password", password)
+     
+      val conn = DriverManager.getConnection(url, connectionProperties)
+      conn.setAutoCommit(false);
+      val  stmt = conn.createStatement();
+     
+     try
+     {
+      stmt.execute("LOCK TABLES omim_cntl_table WRITE,omim_cntl_table as oct WRITE; ");
+      var sql=" select application_id,case  when ((reportStatus='Reading') OR (edlStatus='InProcess')) then '-1' else id end as id \n"+
+             "from omim_cntl_table where id \n"+
+             "in(select max(id) from omim_cntl_table as oct where reportname='"+repName+"'); ";
+      println("mysql command being executed is : " + sql)
+      val result =stmt.executeQuery(sql) // conn.prepareStatement(sql).executeQuery()
+      val resCnt = result.next() //next() returns false if there are no-rows retrieved
+      System.out.println("resCnt="+resCnt);
+      //if(resCnt==false){
+      if(!resCnt){
+          System.out.println("resultset is empty"); //prints this message if your resultset is empty
+          println("inside if")
+          repId=0;
+       }
+      else
+      {
+        System.out.println("result id:"+result.getInt("id"));
+        println("Inside else")
+      repId=result.getInt("id");
+      }
+      System.out.println("repId="+repId);
+ 
+      if(repId != -1)
+      {
+        System.out.println("repId before insert="+repId);
+        sql="insert into omim_cntl_table(reportname,startTime,endTime,processedTime,edlStatus,reportStatus,log,application_id) Values('"+repName+"',now(),null,null,'InProcess',null,null,'"+appid+"');";
+        println("sql:"+sql)
+        //stmt.executeUpdate(sql,createStatement().RETURN_GENERATED_KEYS);
+        var gen = Array("id")
+        stmt.executeUpdate(sql, gen)
+ 
+        val rs = stmt.getGeneratedKeys();
+        if (rs.next()){
+            x=rs.getInt(1);
+        }
+        System.out.println("Insert is complete; id="+x);
+        conn.commit();
+      }
+      else
+      {
+      stmt.execute("UNLOCK TABLES;");
+      conn.close()
+      println("Tables unlocked")
+      cntlProps.setProperty("id", x.toString())
+        cntlProps.setProperty("runStatus", "success")
+        return cntlProps                
+      }
+    }
+     catch {
+      case ex: Exception => {
+        println("Application caught an exception !!!")
+        println(ex.printStackTrace())
+        stmt.execute("UNLOCK TABLES;");
+        conn.rollback();
+        conn.close();
+        cntlProps.setProperty("id", "-1")
+        cntlProps.setProperty("runStatus", "fail")
+        return cntlProps
+        //System.exit(-999)
+        //throw ex
+      }
+
+    //} finally {
+    //println("Application Exiting!!!")
+    //println("Exiting finally...")
+    }
+   
+    System.out.println(" Insert record to table SUCCESS!\n");
+    conn.close();
+    cntlProps.setProperty("id", x.toString())
+    cntlProps.setProperty("runStatus", "success")
+    return cntlProps
+   }
+   
+   
+   
+   
+def setRepEndStatus(repName:String,id:Int,edlStatus:String,log:String,prop:Properties) : Boolean=
+    {
+      val url = prop.getProperty("url")
+      val driver = prop.getProperty("driver")
+      val username = prop.getProperty("username")
+      val password = prop.getProperty("password")
+      val omimcutofftime = prop.getProperty("omimcutofftime")
+ 
+      val connectionProperties = new Properties()
+      connectionProperties.put("user", username)
+      connectionProperties.put("password", password)
+      val conn = DriverManager.getConnection(url, connectionProperties)
+      conn.setAutoCommit(false);
+      val  stmt = conn.createStatement();
+     
+     try
+     {
+      stmt.execute("LOCK TABLES omim_cntl_table WRITE,omim_cntl_table as oct WRITE; ");
+     
+      var sql="update omim_cntl_table set edlStatus='"+edlStatus+"',endTime=now(),processedTime=TIMESTAMPDIFF(SECOND,startTime,NOW()) where id="+id+";";
+      if(log != null)
+        sql="update omim_cntl_table set edlStatus='"+edlStatus+"',endTime=now(),processedTime=TIMESTAMPDIFF(SECOND,startTime,NOW()),log='"+log+"' where id="+id+";";
+      println("mysql command being executed is : " + sql)
+      val result =stmt.executeUpdate(sql) // conn.prepareStatement(sql).executeQuery()
+      conn.commit();
+       System.out.println("update statement done");
+       stmt.execute("UNLOCK TABLES;");
+ 
+    }
+     catch {
+      case ex: Exception => {
+        println("Application caught an exception while updating control table entry !!!")
+        println(ex.printStackTrace())
+        stmt.execute("UNLOCK TABLES;");
+        conn.rollback();
+        conn.close();
+        return false
+        //System.exit(-999)
+        //throw ex
+      }
+
+    }
+     //finally {
+      //println("Application Exiting!!!")
+      //println("Exiting finally...")
+    //}
+    stmt.execute("UNLOCK TABLES;");
+    System.out.println(" update record to table SUCCESS!\n");
+    conn.close();
+
+    return true
+    }
+}
