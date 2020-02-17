@@ -1,0 +1,133 @@
+def main(args: Array[String]) {
+    Logger.getRootLogger.setLevel(Level.ALL)
+//   Logger.getLogger.setLevel(Level.OFF);
+    //    Logger.getLogger("akka").setLevel(Level.OFF);
+        
+      val prop: Properties = new Properties()
+      val fileName = args(0)
+      val hdfsConf = new org.apache.hadoop.conf.Configuration()
+      val fs = org.apache.hadoop.fs.FileSystem.get(hdfsConf)
+      val is = fs.open(new org.apache.hadoop.fs.Path(fileName))
+      prop.load(is)
+      
+       println(" Loading prop file completed !!! ")
+       println(" Setting up application configurations   !!! ")
+      
+      
+      val appName: String = prop.getProperty("application.name")
+      val master: String = prop.getProperty("application.master")
+      val bootstrap: String = prop.getProperty("kafka.bootstrap.servers")
+      val key_serializer: String = prop.getProperty("kafka.key.serializer")
+      val value_serializer: String = prop.getProperty("kafka.value.serializer")
+      val security_protocol: String = prop.getProperty("kafka.security.protocol")
+      val offset_reset: String = prop.getProperty("kafka.auto.offset.reset")
+      val group_id: String = prop.getProperty("kafka.group.id")
+      val enable_auto_commit: String = prop.getProperty("kafka.enable.auto.commit")
+      val topic_name: String = prop.getProperty("kafka.topic.name")
+      val batchDuration: Long = prop.getProperty("kafka.batch.duration").toLong
+      val table_name: String = prop.getProperty("hive_table_name")
+      
+      val checkpoint_dir = prop.getProperty("checkpointDirectory")
+      
+      println("appName:" +appName)
+      println("master:" +master)
+      
+      println("key_serializer:" +key_serializer)
+      println("value_serializer:" +value_serializer)
+      
+      println("bootstrap:" +bootstrap)
+      println("security_protocol:" +security_protocol)
+      println("offset_reset:" +offset_reset)
+      println("group_id:" +group_id)
+      println("enable_auto_commit:" +enable_auto_commit)
+      println("topic_name:" +topic_name)
+      println("batchDuration:" +batchDuration)
+      println("table_name:" +table_name)
+      
+      
+
+    
+    def functionToCreateContext(): StreamingContext = {
+             
+        if (prop.getProperty("print_debug")=="true") { println (" ***creating spark session ***" )}
+      val spark = SparkSession.builder().master(master).appName(appName).getOrCreate()                       
+      if (prop.getProperty("print_debug")=="true") { println ("sparksession is :" + spark)}
+      
+      val sparkContext = spark.sparkContext
+     if (prop.getProperty("print_debug")=="true") { println ("sparkContext is :" + sparkContext)}
+     
+      val ssc = new StreamingContext(sparkContext, Seconds(batchDuration))
+      if (prop.getProperty("print_debug")=="true") { println ("ssc is :" + ssc)}
+      
+      val topics = Set(topic_name)
+      if (prop.getProperty("print_debug")=="true") { println ("topics is :" + topics)}
+      
+      val kafkaParams = Map[String, Object](
+        "bootstrap.servers" -> bootstrap,
+        "key.deserializer" -> classOf[StringDeserializer],
+        "value.deserializer" -> classOf[StringDeserializer],
+        "group.id" -> group_id,
+        "enable.auto.commit" -> enable_auto_commit,
+        "auto.offset.reset" -> offset_reset, //earliest or latest
+        "security.protocol" -> security_protocol)
+ 
+        if (prop.getProperty("print_debug")=="true") { println ("kafkaParams is :" + kafkaParams)}  
+             
+      val stream = KafkaUtils.createDirectStream[String, String](
+        ssc,
+        PreferConsistent,
+        Subscribe[String, String](topics, kafkaParams))
+
+       if (prop.getProperty("print_debug")=="true") { println ("stream is :" + stream)}
+           println("printing values")
+     
+     stream.foreachRDD { rdd => 
+       if (!rdd.isEmpty()) {
+            println("rdd is not empty")
+           
+       
+       val record = rdd.map { consumerRecord => consumerRecord.value }
+         val spark_hbase=  SparkSession.builder.config(rdd.sparkContext.getConf).getOrCreate()
+       import spark.implicits._
+       import spark_hbase.implicits._
+       import org.apache.spark.sql.functions.col
+       import org.apache.spark.sql.execution.datasources.hbase._
+       println("creating dataframe")
+          val df = spark_hbase.read.json(record)
+
+          println("At dataframe show")
+          
+            df.cache
+            df.show
+            df.printSchema
+            
+          
+          //val df2=  df.selectExpr( "cast( datalakeTracking as String)","CAST (Version as String)","CAST (fraud_ind as String)")
+            val df2=  df.selectExpr( "cast(datalakeTracking as String) as key","cast(datalakeApplId as String)","cast(datalakeTransaction as String)","cast(datalakeTracking as String)","cast(datalakeData as String)","cast(profileIdTemp as String)","cast(ban as String)","cast(orderNo as String)","cast(creditApp as String)","cast(username as String)","cast(accountCode as String)","cast(emailAddress as String)","cast(userFunction as String)","cast(deviceId as String)","cast(endUserIP as String)","cast(browserType as String)","cast(browserVersion as String)","cast(result as String)","cast(reason as String)","cast(todaysDate as String)","cast(deviceFirstSeen as String)","cast(deviceNew as String)","cast(deviceType as String)","cast(deviceOS as String)","cast(deviceTZ as String)","cast(deviceCookieEnabled as String)","cast(deviceBrowserConfLang as String)","cast(deviceBrowserLang as String)","cast(deviceIPOrg as String)","cast(deviceISP as String)","cast(deviceIPProxy as String)","cast(deviceLocCity as String)","cast(deviceLocCountry as String)","cast(deviceRealIP as String)","cast(deviceRealIPSource as String)","cast(deviceRealIPOrg as String)","cast(deviceRealIPISP as String)","cast(deviceRealIPProxy as String)","cast(deviceRealIPLocCity as String)","cast(deviceRealIPLocCountry as String)","cast(deviceRulesMatched as String)","cast(deviceRulesetScore as String)","cast(deviceRuleScore as String)","cast(deviceBbAge as String)","cast(deviceBbTime as String)","cast(deviceFlashEnabled as String)","cast(deviceFlashInstalled as String)","cast(deviceFlashStorage as String)","cast(deviceFlashVersion as String)","cast(deviceJsEnabled as String)","cast(deviceScreen as String)","cast(ipLocCountry as String)","cast(ipLocLat as String)","cast(ipLocLng as String)","cast(ipLocRegion as String)","cast(realIpLocCountry as String)","cast(realIpLocLat as String)","cast(realIpLocLng as String)","cast(realIpLocRegion as String)","cast(ruleReason1 as String)","cast(ruleReason2 as String)","cast(ruleReason3 as String)","cast(ruleReason4 as String)","cast(ruleReason5 as String)","cast(ruleType as String)","cast(regCheckMatchStatus as String)","cast(onlineId as String)","cast(serviceId as String)","cast(sessionAlias as String)","cast(sku as String)","cast(ipaddressBotnetIntensity as String)","cast(ipaddressBotnetLastSeen as String)","cast(ipaddressBotnetScore as String)","cast(realIpaddressBotnetIntensity as String)","cast(realIpaddressBotnetLastSeen as String)","cast(realIpaddressBotnetScore as String)","cast(field1 as String)","cast(field2 as String)","cast(field3 as String)","cast(field4 as String)","cast(field5 as String)","cast(field6 as String)","cast(field7 as String)","cast(field8 as String)","cast(field9 as String)","cast(field10 as String)","cast(field11 as String)","cast(field12 as String)","cast(field13 as String)","cast(field14 as String)","cast(field15 as String)","cast(field16 as String)","cast(field17 as String)","cast(field18 as String)","cast(field19 as String)","cast(field20 as String)","cast(field21 as String)","cast(field22 as String)","cast(field23 as String)","cast(field24 as String)","cast(field25 as String)","cast(field26 as String)","cast(field27 as String)","cast(field28 as String)","cast(field29 as String)","cast(field30 as String)","cast(field31 as String)","cast(field32 as String)","cast(field33 as String)","cast(field34 as String)","cast(field35 as String)","cast(field36 as String)","cast(field37 as String)","cast(field38 as String)","cast(field39 as String)","cast(field40 as String)")
+            df2.printSchema
+            println("At dataframe2 show")
+            df2.show
+            
+            val df3=df2.filter(col("key").isNotNull)
+            println("At dataframe3 show")
+           df3.show
+          
+           println("Saving to hbase")  
+      df3.write.options(Map(HBaseTableCatalog.tableCatalog -> catalog_FRD_creditCheckHist, HBaseTableCatalog.newTable -> "5"))
+      .format("org.apache.spark.sql.execution.datasources.hbase")
+      .save() 
+      
+      println("After saving to hbase")
+        
+       }
+       
+     }
+
+      ssc.checkpoint(checkpoint_dir) // set checkpoint directory
+      ssc
+    }
+     val context = StreamingContext.getOrCreate(checkpoint_dir, functionToCreateContext _)
+    // Start the context
+    context.start()
+    context.awaitTermination()
+  }
